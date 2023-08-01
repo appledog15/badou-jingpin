@@ -1,0 +1,148 @@
+# coding:utf8
+
+import torch
+import torch.nn as nn
+import numpy as np
+import random
+import json
+import matplotlib.pyplot as plt
+
+"""
+改为多分类任务。为了实现这一点，我们需要进行以下修改：
+    1. 修改模型的输出层：将模型的输出神经元个数从1个改为多个，以适应多分类任务。输出层的神经元个数应与类别数相等。
+    2. 修改激活函数：对于多分类任务，通常使用 softmax 函数作为输出层的激活函数，而不是 sigmoid 函数。
+    3. 修改损失函数：对于多分类任务，应使用交叉熵损失函数（CrossEntropyLoss）替代均方差损失（MSELoss）。
+    4. 修改数据集标签：将数据集中的标签从0/1二元标签转换为多类别标签。
+    自定义规律：     如果第一个数（x[0]）大于第五个数（x[4]），则将样本划为"类别1"（正样本）
+                   如果第一个数（x[0]）小于等于第五个数（x[4]），但是第二个数（x[1]）大于第四个数（x[3]），则将样本划为"类别2"。
+                   否则，将样本划为"类别0"（负样本）。
+
+"""
+
+# num_classes=3 表示分成3类
+
+class TorchModel(nn.Module):
+    def __init__(self, input_size, num_classes):
+        super(TorchModel, self).__init__()
+        self.linear = nn.Linear(input_size, num_classes)  # 线性层，输出维度为num_classes
+        self.activation = nn.Softmax(dim=1)  # Softmax函数进行多分类
+        self.loss = nn.CrossEntropyLoss()  # loss函数采用交叉熵损失
+
+    def forward(self, x):
+        x = self.linear(x)
+        y_pred = self.activation(x)
+        return y_pred
+
+# 随机生成训练样本
+
+
+# 生成一个样本, 样本的生成方法，代表了我们要学习的规律
+# 随机生成一个5维向量
+# 如果第一个值大于第五个值，认为是1类样本；
+# 如果第一个数（x[0]）小于等于第五个数（x[4]），但是第二个数（x[1]）大于第四个数（x[3]）认为是2类样本；
+# 反之为0样本
+def build_sample():
+    x = np.random.random(5)
+    if x[0] > x[4]:
+        return x, 1
+    elif x[1] > x[3]:
+        return x, 2
+    else:
+        return x, 0
+
+def build_dataset(total_sample_num):
+    X = []
+    Y = []
+    for i in range(total_sample_num):
+        x, y = build_sample()
+        X.append(x)
+        Y.append(y)
+    return torch.FloatTensor(X), torch.LongTensor(Y)  # 使用LongTensor存储整数标签
+
+# 测试代码
+# 用来测试每轮模型的准确率
+def evaluate(model):
+    model.eval()
+    test_sample_num = 100
+    x, y = build_dataset(test_sample_num)
+    print("本次预测集中共有%d个类别0样本，%d个类别1样本，%d个类别2样本" % (sum(y == 0), sum(y == 1), sum(y == 2)))
+    with torch.no_grad():
+        y_pred = model(x)  # 模型预测
+        _, predicted = torch.max(y_pred, 1)  # 取得预测最大概率所属的类别索引
+    correct = (predicted == y).sum().item()
+    total = y.size(0)
+    accuracy = correct / total
+    print("正确预测个数：%d, 正确率：%f" % (correct, accuracy))
+    return accuracy
+
+def main():
+    # 配置参数
+    epoch_num = 40            # 训练轮数
+    batch_size = 20           # 每次训练样本个数
+    train_sample = 5000       # 每轮训练总共训练的样本总数 --------5000是自己造的，实际中应为真实值
+    input_size = 5            # 输入向量维度
+    num_classes = 3           # 假设有3个类别
+    learning_rate = 0.001     # 学习率      也称其为step_size
+
+    # 建立模型
+    model = TorchModel(input_size, num_classes)
+
+    # 选择优化器
+    optim = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    log = []
+
+    # 创建训练集，正常任务是读取训练集
+    train_x, train_y = build_dataset(train_sample)
+
+    # 训练过程
+    for epoch in range(epoch_num):
+        model.train()        # 提醒进入训练过程，自动做些配置
+        watch_loss = []      # 记录总loss
+        for batch_index in range(train_sample // batch_size):
+            x = train_x[batch_index * batch_size: (batch_index + 1) * batch_size]
+            y = train_y[batch_index * batch_size: (batch_index + 1) * batch_size]
+            loss = model(x)
+            loss = model.loss(loss, y)  # 直接使用整数标签作为计算交叉熵损失的输入
+
+            loss.backward()    # 计算梯度
+            optim.step()       # 更新权重
+            optim.zero_grad()  # 梯度归零
+
+            watch_loss.append(loss.item())
+        print("=========\n第%d轮平均loss:%f" % (epoch + 1, np.mean(watch_loss)))
+        acc = evaluate(model)     # 测试本轮模型结果
+        log.append([acc, float(np.mean(watch_loss))])
+    # 保存模型
+    torch.save(model.state_dict(), "model.pth")
+
+    # 画图
+    print(log)
+    plt.plot(range(len(log)), [l[0] for l in log], label="acc")
+    plt.plot(range(len(log)), [l[1] for l in log], label="loss")
+    plt.legend()
+    plt.show()
+
+# 使用训练好的模型做预测
+def predict(model_path, input_vec):
+    input_size = 5
+    num_classes = 3
+    model = TorchModel(input_size, num_classes)
+    model.load_state_dict(torch.load(model_path))  # 加载训练好的权重
+
+    model.eval() # 测试模式
+    with torch.no_grad():# 不计算梯度
+        x = torch.FloatTensor(input_vec)
+        y_pred = model(x)
+        _, predicted = torch.max(y_pred, 1) # 模型预测
+    class_names = ['类别0', '类别1', '类别2']
+    for vec, idx in zip(input_vec, predicted):
+        print("输入：%s, 预测类别：%s" % (vec, class_names[idx]))
+
+
+if __name__ == "__main__":
+    main()
+    test_vec = [[0.47889086, 0.15229675, 0.31082123, 0.03504317, 0.18920843],
+                [0.94963533, 0.9524256, 0.95758807, 0.55204340, 0.99890681],
+                [0.78797868, 0.67482528, 0.13625847, 0.74675372, 0.99871392],
+                [0.89349776, 0.59416669, 0.92579291, 0.91567412, 0.9358894]]
+    predict("model.pth", test_vec)
